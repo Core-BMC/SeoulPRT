@@ -1,10 +1,30 @@
 import streamlit as st
-import time
-import vertexi_writer_api
+import requests
 import asyncio
+import sqlite3
+import os
+import random
+import subprocess
 
-async def run_json_question(json_data):
-    return await asyncio.to_thread(vertexi_writer_api.json_question, json_data)
+
+def get_url_from_db(bcIdx):
+    conn = sqlite3.connect('./rdbms/mss.go.kr.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT url FROM page_info WHERE bcIdx = ?", (bcIdx,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    return None
+
+def create_download_link(filepath, filename):
+    with open(filepath, "rb") as file:
+        btn = st.download_button(
+            label=f"Download {filename}",
+            data=file,
+            file_name=filename
+        )
+    return btn
 
 def save_session_state_to_json():
     session_data = {
@@ -14,15 +34,19 @@ def save_session_state_to_json():
         'support_field': st.session_state.get('support_field', ""),
         'user_question': st.session_state.get('user_question', ""),
         'response_message': st.session_state.get('response_message', ""),
+        'status_done': st.session_state.get('status_done', False),
+        'result_answer': st.session_state.get('result_answer', ""),
+        'valid_urls': st.session_state.get('valid_urls', []),
+        'download_buttons': st.session_state.get('download_buttons', []),
     }
     return session_data
 
 # Set the page title
-st.set_page_config(page_title="SeoulQUERY")
+st.set_page_config(page_title="정책비전AI")
 
-# Display the logo using st.logo
+# Display the logo using st.image
 logo_url = "https://raw.githubusercontent.com/Core-BMC/SeoulPRT/main/images/bmclogo.png"
-st.logo(image=logo_url, link="https://github.com/Core-BMC")
+st.logo(logo_url)
 
 # Center-align the title using markdown and CSS
 st.markdown("""
@@ -35,6 +59,15 @@ st.markdown("""
         font-size: 3.2rem;  /* 글자 크기 조정 */
         font-weight: 900; /* 가장 두꺼운 글자 두께 설정 */
         font-family: 'SeoulHangangC', sans-serif; /* 사용자 정의 폰트 적용 */
+        margin-bottom: ; /* 제목과 서브타이틀 사이 간격 없애기 */
+    }
+    .subtitle {
+        text-align: center;
+        font-size: 1.2rem;  /* 글자 크기 조정 */
+        font-family: 'SeoulHangangC', sans-serif; /* 사용자 정의 폰트 적용 */
+        text-indent: 6em; /* 들여쓰기 3번 적용 */
+        margin-top: -10px; /* 서브타이틀과 간격 없애기 */
+        font-weight: bold;
     }
     .center-text {
         text-align: center;
@@ -59,11 +92,16 @@ st.markdown("""
         font-size: 1.2rem;
         height: 200px; /* 텍스트박스 높이 조정 */
     }
+    .red-text {
+        color: red; /* 빨간색 글자 */
+        font-weight: bold; /* 볼드체 */
+    }
     </style>
     """, unsafe_allow_html=True)
 
 # Title
-st.markdown("<h1 class='title'><b>Seoul</b><b>QUERY</b></h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='title'><b>정책</b><b>비전</b><b>AI</b></h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>for <span class='red-text'>Seoul</span></p>", unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Initialize session state
@@ -83,13 +121,19 @@ if 'response_message' not in st.session_state:
     st.session_state['response_message'] = ""
 if 'status_done' not in st.session_state:
     st.session_state['status_done'] = False
+if 'result_answer' not in st.session_state:
+    st.session_state['result_answer'] = ""
+if 'valid_urls' not in st.session_state:
+    st.session_state['valid_urls'] = []
+if 'download_buttons' not in st.session_state:
+    st.session_state['download_buttons'] = []
 
 # Function to show initial message
 def show_initial_message(container):
     with container:
         st.markdown("""
         <div class="center-text">
-        <b>SeoulQUERY</b>는 서울에서 사업하시는<br>
+        <b>정책비전AI</b>는 서울에서 사업하시는<br>
         소상공인 및 사업주 님의 <b>지원사업<br> 정보제공</b> 및 <b>신청 간소화</b>를 위하여<br>
         서울시의 정책을 자동으로 검색하여<br> 간편하게 신청을 도와드리는<br>
         <b>서울디지털재단-BMC</b> 인공지능 서비스입니다.<br><br>
@@ -258,24 +302,88 @@ def question_5(container):
             st.rerun()
 
 async def process_and_display_result():
-    json_data = save_session_state_to_json()
+    json_data = str(save_session_state_to_json())
     print(json_data)
     
-    with st.status("최신 신청 정보를 검색하고 있습니다...", expanded=True) as status:
+    with st.spinner("최신 신청 정보를 검색하고 있습니다..."):
         st.caption("정보를 검색 중입니다...")
         
-        # 비동기 실행
-        result = await run_json_question(json_data)
+        response = requests.post("http://127.0.0.1:8000/generate-answer/", json={"question": json_data})
         
-        st.caption("구글AI를 통해 정보를 정리했습니다.")
-        status.update(label="검색 완료!", state="complete", expanded=False)
-        
-        # 결과 표시
-        if 'Answer' in result:
-            st.markdown("### 검색 결과")
-            st.write(result['Answer'])
+        if response.status_code == 200:
+            result = response.json()
+            st.caption("구글AI를 통해 정보를 정리했습니다.")
+            
+            if 'result' in result:
+                st.markdown("### 검색 결과")
+                
+                try:
+                    rr = result['result'][-3]['re_generate']['generation']
+                except:
+                    rr = result['result'][2]['generate']['generation']
+                    
+                answer = rr['Answer']
+                st.write(answer)
+                
+                valid_urls = []
+                download_buttons = []
+                
+                # URL 처리
+                reference_urls = rr.get('Reference', {}).get('url', [])
+                if isinstance(reference_urls, str):
+                    reference_urls = [reference_urls]
+                valid_urls = [url for url in reference_urls if url != 'None'][:5]
+
+                # 파일 처리
+                reference_sources = rr.get('Reference', {}).get('source', [])
+                if isinstance(reference_sources, str):
+                    reference_sources = [reference_sources]
+                
+                hwpx_files = [file for file in reference_sources if file.lower().endswith(('.hwpx', '.hwp'))]
+                if hwpx_files:
+                    url = "http://localhost:8000/modify-hwp/"
+                    payload = {
+                        "prom_information": rr['Information'],
+                        "file_path": hwpx_files[0]
+                    }
+                    headers = {"Content-Type": "application/json"}
+                    response = requests.post(url, json=payload, headers=headers)
+                    if response.status_code == 200:
+                        subprocess.run([r'.\.fastapi_venv\Scripts\python.exe', './fastapi/modify_hwp.py'], capture_output=True, text=True)
+                        random_num = random.randrange(1,100)
+                        split_name = hwpx_files[0].split('.')
+                        modi_name = split_name[0]+"_modified."+split_name[1]
+                        change_name = split_name[0]+"_modified"+str(random_num)+"."+split_name[1]
+                        os.rename(modi_name, change_name)
+                        reference_sources.append(change_name)
+
+                # 다운로드 버튼 생성
+                for source in reference_sources:
+                    if os.path.exists(source):
+                        filename = os.path.basename(source)
+                        download_buttons.append((source, filename))
+                
+                # 가장 최근의 5개 다운로드 버튼 유지
+                download_buttons = download_buttons[-5:]
+
+                if valid_urls:
+                    answer += "\n\n## 참고 사이트"
+                    for i, url in enumerate(valid_urls, start=1):
+                        answer += f"\n{i}. {url}"
+                
+                st.session_state['result_answer'] = answer
+                st.session_state['valid_urls'] = valid_urls
+                st.session_state['download_buttons'] = download_buttons
+
+                
+                for filepath, filename in download_buttons:
+                    create_download_link(filepath, filename)
+            else:
+                st.error("검색 결과를 가져오는데 문제가 발생했습니다.")
         else:
-            st.error("검색 결과를 가져오는데 문제가 발생했습니다.")
+            st.error("서버와의 통신 중 오류가 발생했습니다.")
+            print(response.status_code)
+            print(response.json())
         
     st.session_state['status_done'] = True
 
@@ -290,8 +398,11 @@ def show_final_message(container):
         """, unsafe_allow_html=True)
         
         if not st.session_state['status_done']:
-            if st.button("결과 확인하기"):
-                asyncio.run(process_and_display_result())
+            asyncio.run(process_and_display_result())
+        else:
+            st.write(st.session_state['result_answer'])
+            for filepath, filename in st.session_state['download_buttons']:
+                create_download_link(filepath, filename)
         
         if st.button("처음으로", key="home"):
             reset_and_go_home()
@@ -306,6 +417,9 @@ def reset_and_go_home():
     st.session_state['user_question'] = ""
     st.session_state['response_message'] = ""
     st.session_state['status_done'] = False
+    st.session_state['result_answer'] = ""
+    st.session_state['valid_urls'] = []
+    st.session_state['download_buttons'] = []
     st.rerun()
 
 # Handle the click events in Python
